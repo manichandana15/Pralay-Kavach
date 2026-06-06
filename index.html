@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pralay Kavach | Intelligence Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=JetBrains+Mono:wght@500&display=swap');
+        
+        :root { --bg-main: #f1f5f9; --accent: #2563eb; }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: var(--bg-main); color: #0f172a; height: 100vh; overflow: hidden; }
+
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        .glass { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.3); }
+        
+        #map { height: 100%; width: 100%; border-radius: 2rem; z-index: 1; }
+        .leaflet-container { background: #cbd5e1 !important; }
+        .routing-panel { display: none !important; }
+
+        /* Gauge Styling */
+        .gauge-container { position: relative; width: 180px; height: 90px; margin: 0 auto; overflow: hidden; }
+        .gauge-body {
+            width: 180px; height: 180px; border-radius: 50%;
+            background: conic-gradient(#10b981 0deg 90deg, #f59e0b 90deg 150deg, #ef4444 150deg 180deg, #1e293b 180deg 360deg);
+            transform: rotate(-90deg); transition: all 1.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        .gauge-cover { position: absolute; width: 150px; height: 150px; background: #0f172a; border-radius: 50%; top: 15px; left: 15px; z-index: 30; }
+        .gauge-needle {
+            position: absolute; width: 3px; height: 85px; background: #fff; bottom: 0; left: calc(50% - 1.5px);
+            transform-origin: bottom center; transition: transform 1.5s cubic-bezier(0.34, 1.56, 0.64, 1); z-index: 40;
+        }
+
+        /* Animations */
+        @keyframes scan { 0% { top: 0; } 100% { top: 100%; } }
+        .scanner-line { width: 100%; height: 2px; background: linear-gradient(90deg, transparent, #3b82f6, transparent); position: absolute; top: 0; animation: scan 3s linear infinite; z-index: 20; }
+        
+        #radar-overlay {
+            position: absolute; inset: 0; border-radius: 2rem;
+            background: radial-gradient(circle, transparent 20%, rgba(37, 99, 235, 0.05) 100%);
+            pointer-events: none; z-index: 10; opacity: 0; transition: opacity 0.5s;
+        }
+        .scanning #radar-overlay { opacity: 1; }
+
+        .custom-scroll::-webkit-scrollbar { width: 4px; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+
+        .status-critical { animation: pulse-red 2s infinite; border-color: #ef4444 !important; }
+        @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } }
+
+        @keyframes buzz {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-2px) rotate(-0.5deg); }
+            75% { transform: translateX(2px) rotate(0.5deg); }
+        }
+        .alarm-buzz { animation: buzz 0.1s infinite; }
+    </style>
+</head>
+<body class="p-4 flex flex-col gap-4">
+
+    <nav class="bg-white px-8 h-16 flex justify-between items-center rounded-2xl shadow-sm border border-slate-200 shrink-0">
+        <div class="flex items-center gap-4">
+            <div class="p-2 bg-blue-700 rounded-xl shadow-lg">
+                <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"></path></svg>
+            </div>
+            <div>
+                <h1 class="text-xl font-extrabold tracking-tighter text-slate-900 uppercase leading-none">Pralay <span class="text-blue-600">Kavach</span></h1>
+                <p class="text-[9px] font-bold text-slate-500 uppercase tracking-widest mt-1">Vigilance is the bridge between calamity and safety</p>
+            </div>
+        </div>
+        
+        <div class="flex items-center gap-6">
+            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mono" id="liveClock">Initializing SAT_LINK...</p>
+            <div id="statusBadge" class="px-4 py-1.5 rounded-xl bg-slate-900 text-white text-[9px] font-black uppercase tracking-widest flex items-center gap-2 transition-all duration-500">
+                <span id="statusLed" class="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse"></span>
+                <span id="statusText">System: Active</span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="flex flex-1 gap-4 overflow-hidden">
+        
+        <aside class="w-80 flex flex-col gap-4 shrink-0 overflow-y-auto custom-scroll pr-1">
+            
+            <div class="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 space-y-3 relative overflow-hidden">
+                <div class="scanner-line opacity-5"></div>
+                <input id="city" type="text" placeholder="Enter City Name..." class="w-full px-4 py-3 bg-slate-50 border-2 border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold text-sm transition-all">
+                <div class="flex gap-2">
+                    <div class="flex-grow flex items-center justify-between px-3 py-2 bg-slate-50 rounded-xl border border-slate-200">
+                        <span class="text-[9px] font-black text-slate-400 uppercase">Sim Mode</span>
+                        <input type="checkbox" id="simToggle" class="w-4 h-4 accent-blue-600 cursor-pointer">
+                    </div>
+                    <button id="riskBtn" class="px-4 bg-blue-600 text-white font-black rounded-xl hover:bg-slate-900 transition-all text-[10px] uppercase tracking-widest active:scale-95">Analyze</button>
+                </div>
+            </div>
+
+            <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-3">
+                <h3 class="text-[9px] font-black text-slate-400 uppercase tracking-widest">Environment Telemetry</h3>
+                <div class="grid grid-cols-2 gap-2 border border-slate-100 rounded-2xl overflow-hidden bg-slate-100">
+                    
+                    <div class="flex flex-col items-center justify-center p-4 bg-white hover:bg-blue-50/50 transition-all text-center">
+                        <span class="text-xl mb-1">🌧️</span>
+                        <span class="text-[8px] uppercase text-slate-400 font-black">Rainfall</span>
+                        <span id="rainVal" class="text-xs font-black mono text-slate-700">-- mm</span>
+                    </div>
+                    
+                    <div class="flex flex-col items-center justify-center p-4 bg-white hover:bg-blue-50/50 transition-all text-center">
+                        <span class="text-xl mb-1">🌡️</span>
+                        <span class="text-[8px] uppercase text-slate-400 font-black">Temp</span>
+                        <span id="tempVal" class="text-xs font-black mono text-slate-700">--°C</span>
+                    </div>
+
+                    <div class="flex flex-col items-center justify-center p-4 bg-white hover:bg-blue-50/50 transition-all text-center">
+                        <span class="text-xl mb-1">💧</span>
+                        <span class="text-[8px] uppercase text-slate-400 font-black">Humidity</span>
+                        <span id="humidVal" class="text-xs font-black mono text-slate-700">--%</span>
+                    </div>
+
+                    <div class="flex flex-col items-center justify-center p-4 bg-white hover:bg-blue-50/50 transition-all text-center">
+                        <span class="text-xl mb-1">⛰️</span>
+                        <span class="text-[8px] uppercase text-slate-400 font-black">Elev</span>
+                        <span id="elevVal" class="text-xs font-black mono text-slate-700">-- m</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="text-[9px] font-black text-slate-400 uppercase tracking-widest">Pinned Nodes</h3>
+                    <div id="watchCount" class="text-[9px] font-bold text-blue-600 mono">00 / 03</div>
+                </div>
+                <div id="watchlistContainer" class="space-y-2">
+                    <p class="text-[10px] text-slate-300 italic text-center">No nodes pinned.</p>
+                </div>
+            </div>
+
+            <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3">Recent Scans</h3>
+                <div id="historyList" class="flex flex-wrap gap-2">
+                    <p class="text-[10px] text-slate-300 italic">No history.</p>
+                </div>
+            </div>
+        </aside>
+
+        <main class="flex-1 relative bg-white rounded-[2.5rem] p-3 shadow-sm border border-slate-200 overflow-hidden" id="mapFrame">
+            <div id="radar-overlay"></div>
+            
+            <div id="diversionAlert" class="hidden absolute top-6 left-1/2 -translate-x-1/2 z-[1000] glass px-6 py-3 rounded-2xl shadow-xl border-2 border-red-500 flex items-center gap-4 animate-bounce">
+                <span class="text-xl">⚠️</span>
+                <div class="flex flex-col">
+                    <span class="text-[9px] font-black text-red-600 uppercase">Immediate Evacuation Route</span>
+                    <span id="navBanner" class="text-sm font-bold text-slate-900 uppercase">Calculating...</span>
+                </div>
+            </div>
+
+            <div id="map"></div>
+        </main>
+
+        <aside id="results" class="w-80 flex flex-col gap-4 shrink-0">
+            
+            <div id="gaugeCard" class="bg-slate-900 p-6 rounded-[2.5rem] shadow-xl relative overflow-hidden shrink-0 transition-transform duration-300">
+                <div class="gauge-container">
+                    <div class="gauge-body" id="gaugeBody"></div>
+                    <div id="needle" class="gauge-needle"></div>
+                    <div class="gauge-cover"></div>
+                    <div class="absolute top-8 left-1/2 -translate-x-1/2 text-center z-50">
+                        <div id="riskVal" class="text-4xl font-black text-white leading-none mono">0%</div>
+                        <p class="text-[8px] font-bold text-blue-400 uppercase tracking-widest mt-1">Threat Probability</p>
+                    </div>
+                </div>
+                <div id="statusCard" class="mt-4 p-3 rounded-xl text-center border border-white/10 glass transition-all">
+                    <h2 id="riskStatus" class="text-xs font-black uppercase tracking-widest text-white">Standby</h2>
+                </div>
+            </div>
+
+            <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm flex flex-1 flex-col min-h-0">
+                <h3 class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3">Tactical Protocol</h3>
+                <div id="checklistItems" class="space-y-2 overflow-y-auto custom-scroll pr-1">
+                    <p class="text-[10px] text-slate-300 italic">Select a target city.</p>
+                </div>
+            </div>
+
+            <div id="routeCard" class="hidden p-4 bg-blue-600 rounded-3xl text-white shrink-0 shadow-lg">
+                <div class="flex justify-between items-start mb-2">
+                    <span class="text-[8px] font-black uppercase tracking-widest">Safe Haven Located</span>
+                    <span class="text-[10px] font-bold">▲ <span id="elevGain">0</span>m gain</span>
+                </div>
+                <h2 id="routeName" class="text-sm font-extrabold uppercase mb-2 truncate">--</h2>
+                <div class="w-full bg-white/20 h-1.5 rounded-full overflow-hidden">
+                    <div class="bg-white h-full w-2/3 animate-pulse" id="routeProgress"></div>
+                </div>
+            </div>
+
+            <div class="bg-slate-100 p-4 rounded-3xl space-y-3 border border-slate-200">
+                <select id="vehicle" class="w-full bg-white rounded-xl p-2.5 font-bold text-[10px] shadow-sm outline-none cursor-pointer">
+                    <option value="suv">🚙 4x4 Off-road</option>
+                    <option value="sedan">🚗 Light Vehicle</option>
+                    <option value="bus">🚌 Heavy Transport</option>
+                    <option value="pedestrian">🚶 On Foot</option>
+                </select>
+                <div class="flex gap-2">
+                    <button id="pinCityBtn" title="Pin Node" class="p-3 bg-white text-blue-600 rounded-xl shadow-sm hover:bg-blue-600 hover:text-white transition-all active:scale-90">📌</button>
+                    <button id="downloadBtn" class="flex-1 bg-slate-900 text-white font-bold rounded-xl text-[9px] uppercase tracking-widest hover:bg-black transition-all">Export Log</button>
+                </div>
+                <button id="shareWhatsappBtn" class="w-full bg-emerald-600 text-white font-black py-3 rounded-xl hover:bg-emerald-700 transition-all text-[10px] uppercase shadow-lg shadow-emerald-100 active:scale-95">Broadcast SOS Signal</button>
+            </div>
+        </aside>
+
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+    
+    <script>
+        // Audio & System
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        let alarmInterval = null;
+
+        function triggerAlarmSound() {
+            if (alarmInterval) return;
+            alarmInterval = setInterval(() => {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.02, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.start(); osc.stop(audioCtx.currentTime + 0.4);
+            }, 800);
+        }
+
+        function silenceAlarm() { clearInterval(alarmInterval); alarmInterval = null; }
+
+        setInterval(() => {
+            const now = new Date();
+            document.getElementById('liveClock').innerText = `SAT_LINK: ${now.toLocaleTimeString()} | FEB 2026`;
+        }, 1000);
+
+        // Map Setup
+        const map = L.map('map', { zoomControl: false }).setView([20.5937, 78.9629], 5);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            attribution: 'Pralay Kavach'
+        }).addTo(map);
+
+        let routingControl = null;
+        let cityMarker = null;
+        let currentData = null;
+        let watchlist = [];
+        let history = [];
+
+        function updateChecklist(risk) {
+            const container = document.getElementById('checklistItems');
+            const protocols = risk >= 75 ? [
+                { t: "Initiate Evacuation", c: "text-red-600", i: "🚨" },
+                { t: "Cut Utility Lines", c: "text-red-500", i: "✂️" },
+                { t: "Deploy Rescue Units", c: "text-red-500", i: "🚁" }
+            ] : risk >= 40 ? [
+                { t: "Bag Essentials", c: "text-orange-600", i: "🎒" },
+                { t: "Check Levees", c: "text-orange-500", i: "🌊" },
+                { t: "Alert Community", c: "text-orange-500", i: "📢" }
+            ] : [
+                { t: "Monitoring Active", c: "text-emerald-600", i: "🛡️" },
+                { t: "Low Risk Environment", c: "text-emerald-500", i: "✅" }
+            ];
+            container.innerHTML = protocols.map(p => `
+                <div class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
+                    <span class="text-sm">${p.i}</span>
+                    <span class="text-[10px] font-bold ${p.c} uppercase">${p.t}</span>
+                </div>`).join('');
+        }
+
+        function updateUI(risk) {
+            const sC = document.getElementById('statusCard');
+            const sL = document.getElementById('statusLed');
+            const sB = document.getElementById('statusBadge');
+            const sT = document.getElementById('statusText');
+            const gC = document.getElementById('gaugeCard');
+
+            document.getElementById('riskVal').innerText = risk + "%";
+            document.getElementById('needle').style.transform = `rotate(${(risk * 1.8) - 90}deg)`;
+
+            if(risk >= 75) {
+                document.getElementById('riskStatus').innerText = "CRITICAL THREAT";
+                sC.className = "mt-4 p-3 rounded-xl text-center border bg-red-500/10 text-red-500 status-critical";
+                sL.className = "w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse";
+                sB.className = "px-4 py-1.5 rounded-xl bg-red-600 text-white text-[9px] font-black uppercase flex items-center gap-2";
+                sT.innerText = "System: EMERGENCY";
+                gC.classList.add('alarm-buzz');
+                triggerAlarmSound();
+            } else {
+                gC.classList.remove('alarm-buzz');
+                silenceAlarm();
+                if(risk >= 40) {
+                    document.getElementById('riskStatus').innerText = "ELEVATED RISK";
+                    sC.className = "mt-4 p-3 rounded-xl text-center border border-orange-400 bg-orange-400/10 text-orange-500";
+                    sL.className = "w-1.5 h-1.5 bg-orange-400 rounded-full animate-pulse";
+                    sT.innerText = "System: WARNING";
+                } else {
+                    document.getElementById('riskStatus').innerText = "STABLE";
+                    sC.className = "mt-4 p-3 rounded-xl text-center border border-emerald-400 bg-emerald-400/10 text-emerald-500";
+                    sL.className = "w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse";
+                    sT.innerText = "System: Active";
+                }
+            }
+            updateChecklist(risk);
+        }
+
+        document.getElementById('riskBtn').onclick = async () => {
+            const city = document.getElementById('city').value;
+            if(!city) return;
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            
+            document.getElementById('riskBtn').innerText = "FETCHING";
+            document.getElementById('mapFrame').classList.add('scanning');
+
+            try {
+                const response = await fetch(`http://127.0.0.1:8000/predict-flood`, {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ city: city, simulation: document.getElementById('simToggle').checked })
+                });
+                const data = await response.json();
+                currentData = data;
+                
+                const riskVal = document.getElementById('simToggle').checked ? 98 : data.risk;
+                
+                // History Update
+                if (!history.includes(city.toUpperCase())) {
+                    history.unshift(city.toUpperCase());
+                    if (history.length > 5) history.pop();
+                    document.getElementById('historyList').innerHTML = history.map(h => `<button onclick="document.getElementById('city').value='${h}'; document.getElementById('riskBtn').click()" class="px-2 py-1 bg-slate-100 hover:bg-blue-100 text-[9px] font-bold rounded border uppercase">${h}</button>`).join('');
+                }
+
+                // UI Updates
+                document.getElementById('tempVal').innerText = data.temp + "°C";
+                document.getElementById('rainVal').innerText = data.rain_mm + " mm";
+                document.getElementById('elevVal').innerText = data.elev + " m";
+                document.getElementById('humidVal').innerText = (data.humidity || "45") + "%";
+
+                updateUI(riskVal);
+                map.flyTo([data.lat, data.lon], 12);
+                
+                if(cityMarker) map.removeLayer(cityMarker);
+                if(routingControl) map.removeControl(routingControl);
+
+                cityMarker = L.circleMarker([data.lat, data.lon], {
+                    radius: 12, fillColor: riskVal >= 75 ? '#ef4444' : '#2563eb', 
+                    color: "#fff", weight: 3, fillOpacity: 0.9
+                }).addTo(map).bindPopup(`<b class="mono uppercase">${data.city}</b>`).openPopup();
+
+                if(riskVal >= 70) {
+                    document.getElementById('diversionAlert').classList.remove('hidden');
+                    document.getElementById('routeCard').classList.remove('hidden');
+                    document.getElementById('routeName').innerText = data.safe_route_name || "High Ground Shelter 4";
+                    document.getElementById('elevGain').innerText = data.elev_gain || "32";
+                    document.getElementById('navBanner').innerText = "EVAC TO: " + (data.safe_route_name || "SAFE SHELTER");
+                    
+                    routingControl = L.Routing.control({
+                        waypoints: [L.latLng(data.lat, data.lon), L.latLng(data.safe_lat || data.lat+0.04, data.safe_lon || data.lon+0.04)],
+                        lineOptions: { styles: [{color: '#ef4444', weight: 6, opacity: 0.8}] },
+                        addWaypoints: false,
+                        containerClassName: 'routing-panel'
+                    }).addTo(map);
+                } else {
+                    document.getElementById('diversionAlert').classList.add('hidden');
+                    document.getElementById('routeCard').classList.add('hidden');
+                }
+            } catch (e) { 
+                console.error(e);
+                alert("API Error: Connect your backend to port 8000."); 
+            } finally { 
+                document.getElementById('riskBtn').innerText = "ANALYZE"; 
+                setTimeout(() => document.getElementById('mapFrame').classList.remove('scanning'), 1000);
+            }
+        };
+
+        document.getElementById('pinCityBtn').onclick = () => {
+            if (!currentData || watchlist.length >= 3) return;
+            const risk = document.getElementById('simToggle').checked ? 98 : currentData.risk;
+            if (watchlist.some(c => c.city === currentData.city)) return;
+            watchlist.push({ city: currentData.city, risk: risk });
+            
+            document.getElementById('watchCount').innerText = `${String(watchlist.length).padStart(2, '0')} / 03`;
+            document.getElementById('watchlistContainer').innerHTML = watchlist.map((item, index) => `
+                <div class="flex items-center justify-between p-2.5 bg-slate-50 rounded-xl border border-slate-100">
+                    <span class="text-[10px] font-black mono uppercase">${item.city}</span>
+                    <span class="text-[9px] font-bold ${item.risk > 50 ? 'text-red-500' : 'text-emerald-500'}">${item.risk}%</span>
+                </div>`).join('');
+        };
+
+        document.getElementById('shareWhatsappBtn').onclick = () => {
+            if (!currentData) return;
+            const msg = `📡 [PRALAY KAVACH SOS SIGNAL]\n\n` +
+                        `📍 LOCATION: ${currentData.city.toUpperCase()}\n` + 
+                        `⚠️ THREAT LEVEL: ${document.getElementById('riskVal').innerText}\n` +
+                        `🌐 COORDINATES: ${currentData.lat.toFixed(4)}, ${currentData.lon.toFixed(4)}\n` +
+                        `⏰ TIMESTAMP: ${new Date().toLocaleTimeString()}`;
+            
+            window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+        };
+
+        document.getElementById('downloadBtn').onclick = () => {
+            if (!currentData) return;
+            const content = `LOG: ${currentData.city}\nTHREAT: ${document.getElementById('riskVal').innerText}\nDATE: ${new Date().toLocaleString()}`;
+            const blob = new Blob([content], { type: 'text/plain' });
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); 
+            a.download = `REPORT_${currentData.city}.txt`; a.click();
+        };
+    </script>
+</body>
+</html>
